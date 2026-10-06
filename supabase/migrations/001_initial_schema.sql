@@ -6,70 +6,10 @@
 -- ==============================================================================
 
 -- ------------------------------------------------------------------------------
--- 1. EXTENSIONS & HELPER FUNCTIONS
+-- 1. EXTENSIONS
 -- ------------------------------------------------------------------------------
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- Helper Function: Check if the authenticated user is an ADMIN
-CREATE OR REPLACE FUNCTION public.is_admin(user_id UUID)
-RETURNS BOOLEAN
-LANGUAGE sql
-SECURITY DEFINER
-SET search_path = public
-STABLE
-AS $$
-  SELECT EXISTS (
-    SELECT 1 
-    FROM public.profiles 
-    WHERE id = user_id AND role = 'ADMIN'
-  );
-$$;
-
--- Trigger Function: Automatically update updated_at timestamp
-CREATE OR REPLACE FUNCTION public.handle_updated_at()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END;
-$$;
-
--- Trigger Function: Prevent non-admin users from escalating their role
-CREATE OR REPLACE FUNCTION public.prevent_profile_role_escalation()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-  IF NEW.role IS DISTINCT FROM OLD.role AND NOT public.is_admin(auth.uid()) THEN
-    RAISE EXCEPTION 'Only administrators can modify user roles';
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
--- Trigger Function: Automatically create a profile row when a new auth user signs up
-CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-  INSERT INTO public.profiles (id, full_name, role)
-  VALUES (
-    NEW.id,
-    COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
-    'USER'
-  )
-  ON CONFLICT (id) DO NOTHING;
-  RETURN NEW;
-END;
-$$;
 
 -- ------------------------------------------------------------------------------
 -- 2. DATABASE TABLES
@@ -140,7 +80,73 @@ CREATE TABLE IF NOT EXISTS public.order_items (
 );
 
 -- ------------------------------------------------------------------------------
--- 3. INDEXES
+-- 3. HELPER FUNCTIONS & TRIGGERS
+-- ------------------------------------------------------------------------------
+
+-- Helper Function: Check if the authenticated user is an ADMIN
+CREATE OR REPLACE FUNCTION public.is_admin(user_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+STABLE
+AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 
+    FROM public.profiles 
+    WHERE id = user_id AND role = 'ADMIN'
+  );
+END;
+$$;
+
+-- Trigger Function: Automatically update updated_at timestamp
+CREATE OR REPLACE FUNCTION public.handle_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+-- Trigger Function: Prevent non-admin users from escalating their role
+CREATE OR REPLACE FUNCTION public.prevent_profile_role_escalation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.role IS DISTINCT FROM OLD.role AND NOT public.is_admin(auth.uid()) THEN
+    RAISE EXCEPTION 'Only administrators can modify user roles';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+-- Trigger Function: Automatically create a profile row when a new auth user signs up
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO public.profiles (id, full_name, role)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
+    'USER'
+  )
+  ON CONFLICT (id) DO NOTHING;
+  RETURN NEW;
+END;
+$$;
+
+-- ------------------------------------------------------------------------------
+-- 4. INDEXES
 -- ------------------------------------------------------------------------------
 
 CREATE INDEX IF NOT EXISTS idx_profiles_role ON public.profiles(role);
@@ -157,7 +163,7 @@ CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON public.order_items(order_
 CREATE INDEX IF NOT EXISTS idx_order_items_product_id ON public.order_items(product_id);
 
 -- ------------------------------------------------------------------------------
--- 4. TRIGGERS
+-- 5. TRIGGERS ATTACHMENT
 -- ------------------------------------------------------------------------------
 
 -- Triggers for updated_at
@@ -200,7 +206,7 @@ CREATE TRIGGER enforce_profile_role_security
   EXECUTE FUNCTION public.prevent_profile_role_escalation();
 
 -- ------------------------------------------------------------------------------
--- 5. ENABLE ROW LEVEL SECURITY (RLS)
+-- 6. ENABLE ROW LEVEL SECURITY (RLS)
 -- ------------------------------------------------------------------------------
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
@@ -211,12 +217,10 @@ ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.order_items ENABLE ROW LEVEL SECURITY;
 
 -- ------------------------------------------------------------------------------
--- 6. ROW LEVEL SECURITY (RLS) POLICIES
+-- 7. ROW LEVEL SECURITY (RLS) POLICIES
 -- ------------------------------------------------------------------------------
 
--- ------------------------------------------------------------------------------
 -- PROFILES POLICIES
--- ------------------------------------------------------------------------------
 DROP POLICY IF EXISTS "Profiles select policy" ON public.profiles;
 CREATE POLICY "Profiles select policy" ON public.profiles
   FOR SELECT
@@ -232,9 +236,7 @@ CREATE POLICY "Profiles insert policy" ON public.profiles
   FOR INSERT
   WITH CHECK (id = auth.uid() OR public.is_admin(auth.uid()));
 
--- ------------------------------------------------------------------------------
 -- CATEGORIES POLICIES
--- ------------------------------------------------------------------------------
 DROP POLICY IF EXISTS "Categories select policy" ON public.categories;
 CREATE POLICY "Categories select policy" ON public.categories
   FOR SELECT
@@ -255,9 +257,7 @@ CREATE POLICY "Categories delete policy" ON public.categories
   FOR DELETE
   USING (public.is_admin(auth.uid()));
 
--- ------------------------------------------------------------------------------
 -- PRODUCTS POLICIES
--- ------------------------------------------------------------------------------
 DROP POLICY IF EXISTS "Products select policy" ON public.products;
 CREATE POLICY "Products select policy" ON public.products
   FOR SELECT
@@ -278,9 +278,7 @@ CREATE POLICY "Products delete policy" ON public.products
   FOR DELETE
   USING (public.is_admin(auth.uid()));
 
--- ------------------------------------------------------------------------------
 -- CART ITEMS POLICIES
--- ------------------------------------------------------------------------------
 DROP POLICY IF EXISTS "Cart items select policy" ON public.cart_items;
 CREATE POLICY "Cart items select policy" ON public.cart_items
   FOR SELECT
@@ -301,9 +299,7 @@ CREATE POLICY "Cart items delete policy" ON public.cart_items
   FOR DELETE
   USING (user_id = auth.uid());
 
--- ------------------------------------------------------------------------------
 -- ORDERS POLICIES
--- ------------------------------------------------------------------------------
 DROP POLICY IF EXISTS "Orders select policy" ON public.orders;
 CREATE POLICY "Orders select policy" ON public.orders
   FOR SELECT
@@ -324,9 +320,7 @@ CREATE POLICY "Orders delete policy" ON public.orders
   FOR DELETE
   USING (public.is_admin(auth.uid()));
 
--- ------------------------------------------------------------------------------
 -- ORDER ITEMS POLICIES
--- ------------------------------------------------------------------------------
 DROP POLICY IF EXISTS "Order items select policy" ON public.order_items;
 CREATE POLICY "Order items select policy" ON public.order_items
   FOR SELECT
